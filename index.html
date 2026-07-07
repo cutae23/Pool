@@ -350,28 +350,34 @@ function moveBalls() {
       b.rbx*=ROLL_DECAY; b.rby*=ROLL_DECAY;
     } else { b.rbx=0; b.rby=0; }
     const spd=Math.sqrt(b.vx*b.vx+b.vy*b.vy);
+    let pocketed=false;
     if(spd>MIN_V||Math.abs(b.rbx)>0.001||Math.abs(b.rby)>0.001){
       moving=true;
       if(Math.abs(b.sx)>0.05&&spd>MIN_V){
         const px=-b.vy/spd, py=b.vx/spd;
         b.vx+=px*b.sx*SPIN_CURVE; b.vy+=py*b.sx*SPIN_CURVE;
       }
-      b.x+=b.vx; b.y+=b.vy;
+      // 포켓 근처를 한 프레임에 훅 지나쳐서(터널링) 판정을 놓치지 않도록,
+      // 이동 거리를 잘게 나눠 매 구간마다 포켓 판정을 한다.
+      const moveSpd=Math.sqrt(b.vx*b.vx+b.vy*b.vy);
+      const steps=Math.max(1,Math.ceil(moveSpd/(R*0.9)));
+      const stepx=b.vx/steps, stepy=b.vy/steps;
+      for(let s=0;s<steps && !pocketed;s++){
+        b.x+=stepx; b.y+=stepy;
+        for(const p of POCKETS){
+          const d=Math.sqrt((b.x-p.x)**2+(b.y-p.y)**2);
+          if(d < p.r*0.8){
+            b.potted=true; b.vx=0;b.vy=0;b.sx=0;b.sy=0;b.rbx=0;b.rby=0;
+            pottedThisShot.push(b.id);
+            pocketed=true;
+            break;
+          }
+        }
+      }
       b.vx*=FRIC; b.vy*=FRIC;
       b.sx*=SPIN_FRIC; b.sy*=SPIN_FRIC;
     } else { b.vx=0; b.vy=0; b.sx*=0.9; b.sy*=0.9; }
 
-    // 포켓 판정
-    let pocketed=false;
-    for(const p of POCKETS){
-      const d=Math.sqrt((b.x-p.x)**2+(b.y-p.y)**2);
-      if(d < p.r*0.62){
-        b.potted=true; b.vx=0;b.vy=0;b.sx=0;b.sy=0;b.rbx=0;b.rby=0;
-        pottedThisShot.push(b.id);
-        pocketed=true;
-        break;
-      }
-    }
     if(pocketed) continue;
 
     // 쿠션 카운트(수구 기준 뱅크 판정용)
