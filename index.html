@@ -99,6 +99,35 @@ h1 { font-size:1.1rem; color:#c9a84c; letter-spacing:.12em; margin-top:2px; }
   border-radius:8px; padding:8px 11px; font-size:.66rem; color:#6a5030; line-height:1.8; }
 .guide strong { color:#8a7040; }
 
+.online-box { width:100%; max-width:680px; background:#0e0a04; border:1px solid #3a2a10;
+  border-radius:9px; padding:9px 13px; }
+.online-box h3 { font-size:.56rem; letter-spacing:.12em; color:#6a5030; margin-bottom:7px; text-transform:uppercase; }
+.online-row { display:flex; gap:7px; flex-wrap:wrap; align-items:center; }
+.btn-online {
+  background:linear-gradient(135deg,#7a4a1e,#5a3210); border:1px solid #c9a84c;
+  color:#c9a84c; font-size:.72rem; padding:8px 12px; border-radius:8px;
+  cursor:pointer; font-family:inherit; white-space:nowrap;
+}
+.btn-online:disabled { opacity:.4; cursor:default; }
+#joinCodeInput {
+  background:#1a1208; border:1px solid #3a2a10; color:#e8d5a0; font-size:.78rem;
+  padding:8px 10px; border-radius:8px; font-family:inherit; width:100px;
+  text-transform:uppercase; letter-spacing:.06em;
+}
+#onlineStatus { font-size:.68rem; color:#8a7040; margin-top:7px; line-height:1.6; }
+#onlineStatus strong { color:#c9a84c; }
+#roomCodeDisplay {
+  font-size:1.1rem; font-weight:700; color:#ffe8a0; letter-spacing:.15em;
+  background:#1a1208; border:1px dashed #c9a84c; border-radius:7px; padding:6px 12px;
+  display:inline-block; margin-top:6px; cursor:pointer;
+}
+.turn-banner {
+  display:none; width:100%; max-width:680px; text-align:center; font-size:.78rem;
+  color:#1a1008; background:linear-gradient(135deg,#c9a84c,#9a7a2e); border-radius:8px;
+  padding:7px; font-weight:700;
+}
+.turn-banner.show { display:block; }
+
 .winner-ov {
   display:none; position:fixed; inset:0; background:rgba(0,0,0,.88);
   z-index:100; align-items:center; justify-content:center; flex-direction:column; gap:13px;
@@ -155,6 +184,18 @@ h1 { font-size:1.1rem; color:#c9a84c; letter-spacing:.12em; margin-top:2px; }
   </div>
 </div>
 
+<div class="online-box" id="onlineBox">
+  <h3>🌐 온라인 대전 (다른 기기와 연결)</h3>
+  <div class="online-row" id="onlineSetup">
+    <button class="btn-online" id="btnHost">🏠 방 만들기</button>
+    <input type="text" id="joinCodeInput" placeholder="코드 입력">
+    <button class="btn-online" id="btnJoin">🔗 참가하기</button>
+  </div>
+  <div id="onlineStatus">아직 연결되지 않았습니다. 같은 기기에서 번갈아 치거나, 방을 만들어 상대를 초대하세요.</div>
+</div>
+
+<div class="turn-banner" id="turnBanner">상대방의 차례를 기다리는 중...</div>
+
 <div class="status" id="status"><strong>Player 1</strong>의 브레이크샷! 자유공(오픈 테이블)</div>
 
 <div class="controls">
@@ -196,6 +237,7 @@ h1 { font-size:1.1rem; color:#c9a84c; letter-spacing:.12em; margin-top:2px; }
   <button class="btn-again" id="btnAgain">다시 하기</button>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
 <script>
 // ── 캔버스 ──
 const gc  = document.getElementById('gc');
@@ -210,7 +252,7 @@ gc.width = W; gc.height = H;
 ac.width = W; ac.height = H;
 
 // ── 물리 ──
-const R = 13;
+const R = 10;
 const FRIC = 0.984, SPIN_FRIC = 0.97;
 const WALL_REST = 0.78, BALL_REST = 0.93;
 const SPIN_CURVE = 0.07, MIN_V = 0.08;
@@ -262,6 +304,138 @@ let preShotOwnRemaining = null;  // 이번 샷 시작 전, 내 그룹 잔여 개
 let isBreakShot = true;
 let placingCue = false;
 let cheerTimer = null, cheerSubTimer = null;
+
+// ── 온라인 대전 (P2P via PeerJS) ──
+let peer=null, conn=null, myPlayer=null, isHost=false, netFrameCounter=0;
+function isMyTurn(){ return myPlayer===null || cur===myPlayer; }
+function netConnected(){ return conn && conn.open; }
+
+function genRoomCode(){
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s=''; for(let i=0;i<4;i++) s+=chars[Math.floor(Math.random()*chars.length)];
+  return 'pool-'+s;
+}
+function setOnlineStatus(html){ document.getElementById('onlineStatus').innerHTML=html; }
+
+function hostRoom(){
+  const code=genRoomCode();
+  document.getElementById('btnHost').disabled=true;
+  document.getElementById('btnJoin').disabled=true;
+  setOnlineStatus('방 생성 중...');
+  peer=new Peer(code);
+  peer.on('open',id=>{
+    isHost=true; myPlayer=0;
+    setOnlineStatus(`상대에게 이 코드를 알려주세요:<br><span id="roomCodeDisplay">${id.replace('pool-','')}</span><br>연결 대기 중...`);
+    document.getElementById('roomCodeDisplay').onclick=()=>{
+      navigator.clipboard?.writeText(id.replace('pool-',''));
+      setOnlineStatus(`코드가 복사되었습니다: <strong>${id.replace('pool-','')}</strong><br>연결 대기 중...`);
+    };
+  });
+  peer.on('connection',c=>{
+    conn=c; attachConn();
+  });
+  peer.on('error',e=>{
+    setOnlineStatus('오류: '+e.type+' — 다시 시도해주세요.');
+    document.getElementById('btnHost').disabled=false;
+    document.getElementById('btnJoin').disabled=false;
+  });
+}
+
+function joinRoom(){
+  const raw=document.getElementById('joinCodeInput').value.trim().toUpperCase();
+  if(!raw){ setOnlineStatus('참가할 코드를 입력해주세요.'); return; }
+  const code='pool-'+raw;
+  document.getElementById('btnHost').disabled=true;
+  document.getElementById('btnJoin').disabled=true;
+  setOnlineStatus('연결 시도 중...');
+  peer=new Peer();
+  peer.on('open',()=>{
+    isHost=false; myPlayer=1;
+    conn=peer.connect(code,{reliable:true});
+    attachConn();
+  });
+  peer.on('error',e=>{
+    setOnlineStatus('오류: '+e.type+' — 코드를 확인하고 다시 시도해주세요.');
+    document.getElementById('btnHost').disabled=false;
+    document.getElementById('btnJoin').disabled=false;
+  });
+}
+
+function attachConn(){
+  conn.on('open',()=>{
+    document.getElementById('onlineSetup').style.display='none';
+    setOnlineStatus(`✅ 연결됨! 당신은 <strong>${myPlayer===0?'Player 1':'Player 2'}</strong> 입니다.`);
+    if(isHost) reset(); else updateUI();
+  });
+  conn.on('data',onNetData);
+  conn.on('close',()=>{
+    setOnlineStatus('⚠️ 연결이 끊어졌습니다. 새로고침 후 다시 시도해주세요.');
+  });
+  conn.on('error',()=>{
+    setOnlineStatus('⚠️ 연결 오류가 발생했습니다.');
+  });
+}
+
+function sendNet(obj){ if(netConnected()) conn.send(obj); }
+
+function serializeBalls(){
+  return balls.map(b=>({id:b.id,x:+b.x.toFixed(2),y:+b.y.toFixed(2),potted:b.potted}));
+}
+function applyBalls(arr){
+  arr.forEach(sb=>{
+    const b=balls.find(x=>x.id===sb.id);
+    if(!b) return;
+    b.x=sb.x; b.y=sb.y; b.potted=sb.potted;
+    b.vx=0;b.vy=0;b.sx=0;b.sy=0;b.rbx=0;b.rby=0;
+  });
+}
+
+function syncFullState(cheerInfo){
+  sendNet({
+    t:'full',
+    balls:serializeBalls(),
+    groups:groups.slice(),
+    cur, gameOver, isBreakShot, placingCue,
+    statusHTML:document.getElementById('status').innerHTML,
+    statusWarn:document.getElementById('status').classList.contains('warn'),
+    cheer:cheerInfo||null,
+    winnerMsg:gameOver?document.getElementById('winnerMsg').textContent:null,
+    winnerSub:gameOver?document.getElementById('winnerSub').textContent:null,
+  });
+}
+
+function onNetData(data){
+  if(data.t==='full'){
+    applyBalls(data.balls);
+    groups=data.groups.slice();
+    cur=data.cur; gameOver=data.gameOver; isBreakShot=data.isBreakShot; placingCue=data.placingCue;
+    animating=false;
+    setStatus(data.statusHTML);
+    document.getElementById('status').classList.toggle('warn',data.statusWarn);
+    if(data.cheer) showCheer(data.cheer.main,data.cheer.sub,data.cheer.color);
+    updateUI();
+    document.getElementById('btnShoot').disabled=false;
+    if(gameOver){
+      document.getElementById('winnerMsg').textContent=data.winnerMsg;
+      document.getElementById('winnerSub').textContent=data.winnerSub;
+      setTimeout(()=>document.getElementById('winnerOv').classList.add('show'),1200);
+    } else {
+      document.getElementById('winnerOv').classList.remove('show');
+    }
+  } else if(data.t==='frame'){
+    animating=true;
+    applyBalls(data.b);
+  } else if(data.t==='aim'){
+    aimAngle=data.a; pullDist=data.p; pulling=data.pulling;
+  } else if(data.t==='spin'){
+    spinX=data.x; spinY=data.y; drawSpin(); updateSpinInfo();
+  } else if(data.t==='resetGame'){
+    reset(true);
+  }
+}
+
+document.getElementById('btnHost').onclick=hostRoom;
+document.getElementById('btnJoin').onclick=joinRoom;
 
 // ── 공 배치(래킹) ──
 function mkBall(num,x,y){
@@ -315,6 +489,7 @@ function updateSpinInfo() {
   el.innerHTML=v+(v&&h?'<br>':'')+h||(v||h);
 }
 function handleSpin(cx,cy) {
+  if(!isMyTurn()) return;
   const rect = sc.getBoundingClientRect();
   let dx=(cx-rect.left)*(64/rect.width)-32;
   let dy=(cy-rect.top)*(64/rect.height)-32;
@@ -323,6 +498,7 @@ function handleSpin(cx,cy) {
   spinX=Math.max(-0.84,Math.min(0.84,dx/26));
   spinY=Math.max(-0.84,Math.min(0.84,dy/26));
   drawSpin(); updateSpinInfo();
+  if(netConnected()) sendNet({t:'spin',x:spinX,y:spinY});
 }
 let spinDrag=false;
 sc.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();spinDrag=true;handleSpin(e.touches[0].clientX,e.touches[0].clientY);},{passive:false});
@@ -350,34 +526,28 @@ function moveBalls() {
       b.rbx*=ROLL_DECAY; b.rby*=ROLL_DECAY;
     } else { b.rbx=0; b.rby=0; }
     const spd=Math.sqrt(b.vx*b.vx+b.vy*b.vy);
-    let pocketed=false;
     if(spd>MIN_V||Math.abs(b.rbx)>0.001||Math.abs(b.rby)>0.001){
       moving=true;
       if(Math.abs(b.sx)>0.05&&spd>MIN_V){
         const px=-b.vy/spd, py=b.vx/spd;
         b.vx+=px*b.sx*SPIN_CURVE; b.vy+=py*b.sx*SPIN_CURVE;
       }
-      // 포켓 근처를 한 프레임에 훅 지나쳐서(터널링) 판정을 놓치지 않도록,
-      // 이동 거리를 잘게 나눠 매 구간마다 포켓 판정을 한다.
-      const moveSpd=Math.sqrt(b.vx*b.vx+b.vy*b.vy);
-      const steps=Math.max(1,Math.ceil(moveSpd/(R*0.9)));
-      const stepx=b.vx/steps, stepy=b.vy/steps;
-      for(let s=0;s<steps && !pocketed;s++){
-        b.x+=stepx; b.y+=stepy;
-        for(const p of POCKETS){
-          const d=Math.sqrt((b.x-p.x)**2+(b.y-p.y)**2);
-          if(d < p.r*0.8){
-            b.potted=true; b.vx=0;b.vy=0;b.sx=0;b.sy=0;b.rbx=0;b.rby=0;
-            pottedThisShot.push(b.id);
-            pocketed=true;
-            break;
-          }
-        }
-      }
+      b.x+=b.vx; b.y+=b.vy;
       b.vx*=FRIC; b.vy*=FRIC;
       b.sx*=SPIN_FRIC; b.sy*=SPIN_FRIC;
     } else { b.vx=0; b.vy=0; b.sx*=0.9; b.sy*=0.9; }
 
+    // 포켓 판정
+    let pocketed=false;
+    for(const p of POCKETS){
+      const d=Math.sqrt((b.x-p.x)**2+(b.y-p.y)**2);
+      if(d < p.r*0.85){
+        b.potted=true; b.vx=0;b.vy=0;b.sx=0;b.sy=0;b.rbx=0;b.rby=0;
+        pottedThisShot.push(b.id);
+        pocketed=true;
+        break;
+      }
+    }
     if(pocketed) continue;
 
     // 쿠션 카운트(수구 기준 뱅크 판정용)
@@ -532,8 +702,15 @@ function render(){
 }
 
 function gameLoop(){
-  if(animating){if(!moveBalls()){animating=false;endTurn();}}
+  if(animating && isMyTurn()){
+    if(!moveBalls()){ animating=false; endTurn(); }
+    else if(netConnected()){
+      netFrameCounter++;
+      if(netFrameCounter%2===0) sendNet({t:'frame', b:serializeBalls()});
+    }
+  }
   render();
+  document.getElementById('turnBanner').classList.toggle('show', myPlayer!==null && !isMyTurn() && !gameOver);
   requestAnimationFrame(gameLoop);
 }
 
@@ -551,7 +728,7 @@ function showCheer(main,sub,color){
 
 // ── 발사 ──
 function shoot(power){
-  if(animating||gameOver||placingCue) return;
+  if(animating||gameOver||placingCue||!isMyTurn()) return;
   const cb=cueBall();
   cb.sx=spinX; cb.sy=-spinY; shotPower=power; cushionHits=0;
   firstContactDone=false; firstHitId=null; anyRailAfterContact=false; pottedThisShot=[];
@@ -565,6 +742,7 @@ function shoot(power){
 
 // ── 턴 종료 / 8볼 판정 ──
 function endTurn(){
+  if(!isMyTurn()) return; // 안전장치: 상대 턴에는 로컬에서 판정하지 않음
   const scratched = pottedThisShot.includes(0);
   const pottedNonCue = pottedThisShot.filter(id=>id!==0);
   const potted8 = pottedNonCue.includes(8);
@@ -649,6 +827,7 @@ function endTurn(){
   }
   updateUI();
   document.getElementById('btnShoot').disabled=false;
+  syncFullState(cheer);
 }
 
 function finishGame(winner, reasonText){
@@ -658,6 +837,7 @@ function finishGame(winner, reasonText){
   document.getElementById('winnerSub').textContent = reasonText;
   updateUI();
   setTimeout(()=>document.getElementById('winnerOv').classList.add('show'),1200);
+  syncFullState({main:'🏆 승리!',sub:reasonText,color:'#ffd700'});
 }
 
 // ── 입력 ──
@@ -688,54 +868,65 @@ function placeCueAt(p){
   placingCue=false;
   setStatus(`큐볼 배치 완료 — <strong>P${cur+1}</strong> 샷을 준비하세요`);
   document.getElementById('status').classList.remove('warn');
+  syncFullState();
 }
+
+function sendAim(){ if(netConnected()&&isMyTurn()) sendNet({t:'aim',a:aimAngle,p:pullDist,pulling}); }
 
 gc.addEventListener('touchstart',e=>{
   e.preventDefault();
-  if(animating||gameOver) return;
+  if(animating||gameOver||!isMyTurn()) return;
   const p=pt(e.touches[0].clientX,e.touches[0].clientY);
   if(placingCue){ placeCueAt(p); return; }
   if(distCue(p)<=R*3.2){pulling=true;pullStart=p;pullDist=0;}
   else{pulling=false;const c=cueBall();aimAngle=Math.atan2(p.y-c.y,p.x-c.x);}
+  sendAim();
 },{passive:false});
 
 gc.addEventListener('touchmove',e=>{
   e.preventDefault();
-  if(animating||gameOver||placingCue) return;
+  if(animating||gameOver||placingCue||!isMyTurn()) return;
   const p=pt(e.touches[0].clientX,e.touches[0].clientY);
   if(pulling){
     const dx=p.x-pullStart.x,dy=p.y-pullStart.y,d=Math.sqrt(dx*dx+dy*dy);
     if(d>5) aimAngle=Math.atan2(-dy,-dx);
     pullDist=Math.min(MAX_PULL,d);
   } else {const c=cueBall();aimAngle=Math.atan2(p.y-c.y,p.x-c.x);}
+  sendAim();
 },{passive:false});
 
 gc.addEventListener('touchend',e=>{
   e.preventDefault();
+  if(!isMyTurn()) return;
   if(pulling&&pullDist>6) shoot(5+pullDist/MAX_PULL*(MAX_POWER-5));
   pulling=false; pullStart=null; pullDist=0;
+  sendAim();
 },{passive:false});
 
 let md=false;
 gc.addEventListener('mousedown',e=>{
-  if(animating||gameOver) return;
+  if(animating||gameOver||!isMyTurn()) return;
   const p=pt(e.clientX,e.clientY);
   if(placingCue){ placeCueAt(p); return; }
   if(distCue(p)<=R*3.2){pulling=true;pullStart=p;pullDist=0;md=true;}
   else{const c=cueBall();aimAngle=Math.atan2(p.y-c.y,p.x-c.x);md=true;}
+  sendAim();
 });
 window.addEventListener('mousemove',e=>{
-  if(!md||animating||gameOver||placingCue) return;
+  if(!md||animating||gameOver||placingCue||!isMyTurn()) return;
   const p=pt(e.clientX,e.clientY);
   if(pulling){
     const dx=p.x-pullStart.x,dy=p.y-pullStart.y,d=Math.sqrt(dx*dx+dy*dy);
     if(d>5) aimAngle=Math.atan2(-dy,-dx);
     pullDist=Math.min(MAX_PULL,d);
   } else {const c=cueBall();aimAngle=Math.atan2(p.y-c.y,p.x-c.x);}
+  sendAim();
 });
 window.addEventListener('mouseup',()=>{
+  if(!isMyTurn()) return;
   if(pulling&&pullDist>6) shoot(5+pullDist/MAX_PULL*(MAX_POWER-5));
   pulling=false;pullStart=null;pullDist=0;md=false;
+  sendAim();
 });
 
 // ── UI ──
@@ -751,9 +942,17 @@ function updateUI(){
   updateGroupLabels();
   document.getElementById('p1chip').classList.toggle('active',cur===0);
   document.getElementById('p2chip').classList.toggle('active',cur===1);
+  if(myPlayer!==null){
+    document.getElementById('p1chip').querySelector('.pname').textContent = myPlayer===0?'Player 1 (나)':'Player 1';
+    document.getElementById('p2chip').querySelector('.pname').textContent = myPlayer===1?'Player 2 (나)':'Player 2';
+    const myTurn=isMyTurn();
+    document.getElementById('btnShoot').disabled = animating||gameOver||placingCue||!myTurn;
+    pslider.disabled = !myTurn;
+    document.getElementById('turnBanner').textContent = myTurn? '✅ 당신의 차례입니다!' : '⏳ 상대방의 차례를 기다리는 중...';
+  }
 }
 
-function reset(){
+function reset(fromNet){
   groups=[null,null];
   cur=0; animating=false; gameOver=false; placingCue=false;
   shotPower=0; cushionHits=0; firstContactDone=false; firstHitId=null;
@@ -765,11 +964,12 @@ function reset(){
   document.getElementById('status').classList.remove('warn');
   document.getElementById('winnerOv').classList.remove('show');
   document.getElementById('btnShoot').disabled=false;
+  if(!fromNet && netConnected()){ sendNet({t:'resetGame'}); syncFullState(); }
 }
 
 document.getElementById('btnShoot').onclick=()=>shoot(parseFloat(pslider.value));
-document.getElementById('btnReset').onclick=reset;
-document.getElementById('btnAgain').onclick=reset;
+document.getElementById('btnReset').onclick=()=>reset();
+document.getElementById('btnAgain').onclick=()=>reset();
 
 updateUI();
 gameLoop();
